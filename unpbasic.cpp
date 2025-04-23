@@ -91,7 +91,7 @@ string token_to_ascii(const uint8_t input[], size_t size){
 
 		++++idxInput;	// Advance the cursor to the line number.
 
-		output << dec << (unsigned short) *(input+idxInput) << " "; ++idxInput;	//Output the line number.
+		output << dec << *(unsigned short *)(input+idxInput) << " "; ++idxInput;	//Output the line number.
 		// We only increment the index once because it gets incremented again as soon as it gets into the while loop.
 
 		// This is the line information itself.

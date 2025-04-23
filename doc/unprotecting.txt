@@ -1,0 +1,110 @@
+"Protected" GW-BASIC programs
+
+GW-BASIC has an optional parameter to the SAVE statement that allows a program to be saved in "protected" form. The file is pseudo-encrypted and the initial byte of the file is changed to FE instead of FF. When the program is loaded, it is decoded and a flag is set in the GW-BASIC data work area to indicate that a protected program is loaded. While this flag is set, any GW-BASIC statement is still allowed in a program line but editing the program is prohibited and several statements are disabled in direct statements to prevent access to the protected program. SAVE without the P option is prohibited; LIST and LLIST is prohibited; PEEK, POKE, BSAVE and BLOAD are disabled, and CHAIN cannot include the MERGE option.
+
+While this appears to suggest that you are out of luck if you have an old protected GW-BASIC program that needs updating (such as an accounting package that won't accept non-US addresses for employees when you just went international) there is still a way to unprotect such programs if you have a copy of GW-BASIC. It relies on one of the bugs in the VAL function.
+
+If a way can be found to poke a zero value into the the GW-BASIC interpreter's protection flag byte, a loaded protected program would suddenly become unprotected and could then be LISTed, SAVEd in unprotected form or edited. To do that you need two things, the address of the protection flag for your version of GW-BASIC and a way to trick the GW-BASIC interpreter into thinking that a manually-entered POKE statement was a program statement and not a direct manual entry.
+
+Protection flag addresses I have run across:
+	1124	&H0464	IBM BASICA
+	1228	&H04CC	Compaq BASIC 2.11
+	1433	&H0599	Compaq BASIC 3.11
+	1435	&H059B	TI Professional BASIC 1.10
+	1435	&H059B	Solution 5000 PC BASIC 1.10
+	1450	&H05AA	Tandy PC BASIC (version unknown), Model 2500XL
+	1453	&H05AD	Tandy PC BASIC (version unknown)
+	1457	&H05B1	Corona PC GWBASIC 1.10
+	1483	&H05CB	Tandy PC BASIC (version unknown)
+	1548	&H0601	Sperry PC BASICA 2.03
+
+To determine the protection flag address for your version of GW BASIC, you need to load an unprotected program into memory and then find out which address will protect the program when it is changed from a zero byte to a non-zero byte. Load the following short program into your BASIC interpreter, save it in unprotected form, LIST it, and then run the last line as a direct statement by typing over the line number and pressing your <Enter> or <Return> key. A bunch of successive addresses will be printed and then the program will stop with "Illegal function call" displayed. Write down the last address printed. That will be the address of the protection flag for your version of GW-BASIC. Here is the short program (I call it "poketest.bas" -- make sure line 104 is entered as a single line even if your browser wraps it):
+
+	100 ' type the following line 104 as a direct statement or just LIST
+	102 ' this and then run line 104 by deleting the line number "104"
+	103 ' and pressing the <Return> or <Enter> key:
+	104 FOR I=1000 TO 16000:PRINT I: J=PEEK(I): POKE I,((J=0)AND 255) OR J: POKE I,J:NEXT I
+
+What the program does is change successive zero bytes to non-zero and then restores them back to their original values until it hits the protection flag. Once the POKE I,((J=0)AND 255) OR J statement turns on the protection flag, the POKE I,J statement becomes a forbidden statement in a direct statement.
+
+Now go back to the top of this page and review what has been written about the numeric tokens, paying special attention to 0Dxxxx, 0Exxxx, 10 and 1E. Then review the detokenizing example at the link above. The background there will help you understand the bug we are going to exploit.
+
+Almost everywhere in the BASIC interpretor, one of two routines are called to get the current or next significant character to be processed. The "get next item" routine would be very confused if it encountered a byte in a numeric constant because those bytes can have any value. Therefore, whenever a numeric token is encountered, the following things are done:
+
+    The numeric constant is evaluated and converted to a full integer if it is one of the one- (11 to 1B) or two-byte (0Fxx) tokens,
+    the two-, four- or eight-byte value is placed in a temporary eight-byte accumulator,
+    the type (integer, single- or double-precision floating-point, line number or line pointer) is saved in a type flag byte,
+    the constant is skipped and the address of the next byte after the constant is stored in a temporary program-counter storage area,
+    the current regular program counter is pointed to the 1E byte of a byte pair, 1E10 and
+    the 1E is returned to the requesting interpreter routine which tells it to use the numeric constant in the temporary accumulator if that is a valid item at this point in the statement being interpreted.
+
+What happens with VAL? The regular program counter is pushed on a stack, it is changed to point to the string to be evaluated, a zero-byte is inserted at the end of the string to ensure that VAL won't evaluate past the end of the string (such as when two strings adjacent in BASIC's string work area have the values "123" and "456" respectively, we don't want VAL to return 123456 as the value), and then BASIC's numeric-evaluation routine is called to evaluate the string. It uses the same call to "get current byte" and "get next byte" as the rest of the interpreter does. When the evaluation encounters what it thinks is the end of the number, it returns to VAL, VAL then replaces the zero byte, pops the original program counter from the stack and returns the evaluation result to its caller.
+
+"Where's the bug!" you ask. What do you think happens if VAL is followed by a numeric constant and the number in the string is also followed by a numeric constant? Right. The one in the program line that follows VAL is over-written by the one in the string. On return to the VAL processing routine, the program counter is not restored to point to the statement with the VAL function. It is restored to point to the constant in the string. Now the string is being interpreted instead of the statement with VAL in it.
+
+Normally this would cause a syntax error but there is one statement in BASIC that can have a numeric constant follow a function without intervening punctuation. That is a PRINT statement.
+
+"How does this help?" you ask. The answer is that POKE is not allowed in a direct statement but is allowed in a program line. If we can go to a program line that has a POKE in it to turn off the protection flag then that will be allowed and the protection is turned off. Once a GOTO is executed, we are no longer in a direct statement. Obviously we cannot go to any line in the protected program. Firstly we don't know what line numbers are in it so we can't go to any one of them. Secondly, we don't know what is in the lines so we couldn't go to a suitable POKE if there was one, and thirdly, the chances of there being a suitable POKE in the protected program are slimmer than my chances of becoming richer than Bill Gates. However, using a pointer token instead of a line-number token means that the "program" line we go to can be anywhere in memory and doesn't have to really be in the program we need to unprotect. A numeric array is a convenient place for it.
+
+What we need to do is to
+
+    put a "POKE flagaddress,0" statement into a numeric array (with some leading spaces for flexibility),
+    create a string (B$) that consists of
+        a number in ASCII for VAL to process,
+        a tokenized numeric constant,
+        a colon to start a new statement, and
+        a GOTO statement with a line-pointer that points to the array
+    and then run a direct PRINT statement such as "PRINT VAL(B$) 123".
+
+Replace the 1450 below with the protection flag address of your version of GW-BASIC and "secret.bas" with the name of the program to be unprotected.
+The unprotection routine (with comments):
+
+	load "secret.bas"
+	dim a%[14]
+	a%[0]=0:a%[1]=&h2020:a%[2]=&h2020:a%[3]=&h2097
+	'               "  "         "  "      "DEF "
+	a%[4]=&h4553:a%[5]=&h2047:a%[6]=&H203A:a%[7]=&H2098
+	'       "SE"         "G "         ": "       "POKE "
+	a%[8]=&H1C20            :a%[9]=1450      :a%[10]=&h112C
+	'   " " + integer token  the flag address     ",0"
+	a%[11]=&h903A    :a%[12]=0
+	'       ":STOP"  end-of-line
+	b$="" ' must be defined before VARPTR is called.
+	b$="123"+chr$(28)+":::"+chr$(137)+chr$(13)+mki$(varptr(a%[0]))+":"
+
+	print val(b$) 456
+
+
+
+===== Alternative method of accessing =====
+
+ BBS: Inland Empire Archive
+Date: 10-21-92 (10:38)             Number: 302
+From: TONY ELLIOTT                 Refer#: NONE
+  To: DAVID LUCKIE                  Recvd: NO  
+Subj: Re: Unprotecting GWBASIC       Conf: (2) Quik_Bas
+
+ DL> Not too long ago, someone posted a method by which GWBASIC code saved
+ DL> using the 'p' command could be unprotected.  Does anyone here have or
+ DL> remember the process?
+
+Using DEBUG, create a two byte file called UNP.BAS:
+
+    DEBUG
+    e 100 FF 7B
+    RCX
+    2
+    N UNP.BAS
+    W
+    Q
+
+Start GWBASIC and load your protected program. Now, LOAD "UNP.BAS"
+right over the top of the first program. That was easy, wasn't it!
+
+Tony
+
+
+
+... If at first you don't succeed, destroy all evidence that you tried.
+--- Blue Wave/Max v2.10 [NR]
+ * Origin: Oakland BBS - McDonough, GA - (404) 954-0071 (1:133/706.0)
